@@ -2,78 +2,134 @@
 #include <string>
 #include <string_view>
 #include <vector>
-#include <filesystem>
-#include <system_error>
-#include <algorithm>
+#include <thread>
+#include <mutex>
+#include <condition_variable>
 #include <cwctype>
+#include <algorithm>
 
-#ifdef _WIN32
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
-#endif
 
-namespace fs = std::filesystem;
-
-#ifdef _WIN32
-// std::wstring を UTF-8 の std::string に変換
-std::string to_utf8(std::wstring_view wstr) {
-    if (wstr.empty()) return std::string();
-    int size = WideCharToMultiByte(CP_UTF8, 0, wstr.data(), static_cast<int>(wstr.size()), nullptr, 0, nullptr, nullptr);
-    if (size <= 0) return std::string();
-    std::string result(size, '\0');
-    WideCharToMultiByte(CP_UTF8, 0, wstr.data(), static_cast<int>(wstr.size()), result.data(), size, nullptr, nullptr);
-    return result;
+// 高速小文字化（ASCIIはビット演算、Unicodeはtowlower）
+inline wchar_t fast_towlower(wchar_t c) {
+    if (c >= L'A' && c <= L'Z') return c + 32;
+    if (c > 127) return std::towlower(c);
+    return c;
 }
 
-void print_line(std::wstring_view wstr) {
-    std::cout << to_utf8(wstr) << "\n";
-}
+// 部分一致（大文字小文字無視、事前小文字化クエリを使用）
+bool contains_case_insensitive_fast(const wchar_t* str, size_t str_len, const std::wstring& lower_query) {
+    if (lower_query.empty()) return true;
+    size_t q_len = lower_query.size();
+    if (str_len < q_len) return false;
 
-void print_err_line(std::wstring_view wstr) {
-    std::cerr << to_utf8(wstr) << "\n";
-}
-#else
-void print_line(std::wstring_view wstr) {
-    std::wcout << wstr << L"\n";
-}
-void print_err_line(std::wstring_view wstr) {
-    std::wcerr << wstr << L"\n";
-}
-#endif
-
-// 大文字小文字を区別しない部分一致検索
-bool contains_case_insensitive(std::wstring_view source, std::wstring_view query) {
-    if (query.empty()) return true;
-    auto it = std::search(
-        source.begin(), source.end(),
-        query.begin(), query.end(),
-        [](wchar_t a, wchar_t b) {
-            return std::towlower(a) == std::towlower(b);
+    size_t max_i = str_len - q_len;
+    for (size_t i = 0; i <= max_i; ++i) {
+        bool match = true;
+        for (size_t j = 0; j < q_len; ++j) {
+            if (fast_towlower(str[i + j]) != lower_query[j]) {
+                match = false;
+                break;
+            }
         }
-    );
-    return it != source.end();
+        if (match) return true;
+    }
+    return false;
 }
 
-// 大文字小文字を区別する部分一致検索
-bool contains_case_sensitive(std::wstring_view source, std::wstring_view query) {
+// 部分一致（大文字小文字区別あり）
+bool contains_case_sensitive_fast(const wchar_t* str, size_t str_len, const std::wstring& query) {
     if (query.empty()) return true;
-    return source.find(query) != std::wstring_view::npos;
+    size_t q_len = query.size();
+    if (str_len < q_len) return false;
+
+    return std::wstring_view(str, str_len).find(query) != std::wstring_view::npos;
+}
+
+namespace {
+    thread_local std::string t_output_buffer;
+}
+
+// 高速・低オーバーヘッドな標準出力バッファリング
+class OutputWriter {
+public:
+    static void write_line(std::wstring_view path) {
+        char utf8_scratch[32768];
+        int size = WideCharToMultiByte(CP_UTF8, 0, path.data(), static_cast<int>(path.size()), utf8_scratch, sizeof(utf8_scratch) - 2, nullptr, nullptr);
+        if (size <= 0) return;
+
+        utf8_scratch[size] = '\r';
+        utf8_scratch[size + 1] = '\n';
+
+        t_output_buffer.append(utf8_scratch, size + 2);
+
+        // バッファが 64KB 以上溜まったらフラッシュ
+        if (t_output_buffer.size() >= 65536) {
+            flush_thread();
+        }
+    }
+
+    static void flush_thread() {
+        if (!t_output_buffer.empty()) {
+            flush_buffer(t_output_buffer);
+        }
+    }
+
+private:
+    static void flush_buffer(std::string& buf) {
+        static std::mutex s_output_mutex;
+        static HANDLE s_hStdout = GetStdHandle(STD_OUTPUT_HANDLE);
+
+        std::lock_guard<std::mutex> lock(s_output_mutex);
+        DWORD written = 0;
+        WriteFile(s_hStdout, buf.data(), static_cast<DWORD>(buf.size()), &written, nullptr);
+        buf.clear();
+    }
+};
+
+void print_line(std::wstring_view wstr) {
+    char utf8[4096];
+    int size = WideCharToMultiByte(CP_UTF8, 0, wstr.data(), static_cast<int>(wstr.size()), utf8, sizeof(utf8) - 2, nullptr, nullptr);
+    if (size > 0) {
+        utf8[size] = '\r';
+        utf8[size + 1] = '\n';
+        DWORD written = 0;
+        WriteFile(GetStdHandle(STD_OUTPUT_HANDLE), utf8, static_cast<DWORD>(size + 2), &written, nullptr);
+    }
+}
+
+void print_err_line(std::wstring_view wstr) {
+    char utf8[4096];
+    int size = WideCharToMultiByte(CP_UTF8, 0, wstr.data(), static_cast<int>(wstr.size()), utf8, sizeof(utf8) - 2, nullptr, nullptr);
+    if (size > 0) {
+        utf8[size] = '\r';
+        utf8[size + 1] = '\n';
+        DWORD written = 0;
+        WriteFile(GetStdHandle(STD_ERROR_HANDLE), utf8, static_cast<DWORD>(size + 2), &written, nullptr);
+    }
 }
 
 // 使い方・ヘルプの表示
 void print_usage(const wchar_t* prog_name) {
-    std::wstring exe_name = fs::path(prog_name).filename().wstring();
+    std::wstring exe_name = prog_name;
+    size_t last_slash = exe_name.find_last_of(L"\\/");
+    if (last_slash != std::wstring::npos) {
+        exe_name = exe_name.substr(last_slash + 1);
+    }
 
     print_line(L"使用方法:");
     print_line(L"  " + exe_name + L" <検索文字列> [検索パス] [オプション]\n");
     print_line(L"説明:");
     print_line(L"  指定したパス内（サブディレクトリ含む）から、ファイル名または");
-    print_line(L"  フォルダ名に検索文字列を含むものを再帰的に検索し、フルパスを出力します。\n");
+    print_line(L"  フォルダ名に検索文字列を含むものをマルチスレッドで超高速に再帰検索し、");
+    print_line(L"  フルパスを出力します。\n");
     print_line(L"引数:");
     print_line(L"  <検索文字列>           検索する文字（部分一致・必須）");
     print_line(L"  [検索パス]             検索を開始するフォルダ（省略時はカレントディレクトリ）\n");
     print_line(L"オプション:");
     print_line(L"  -s, --case-sensitive   大文字と小文字を区別して検索します（デフォルト: 区別なし）");
+    print_line(L"  -t <スレッド数>        並列スレッド数を指定（デフォルト: CPUの論理コア数）");
     print_line(L"  -h, --help             このヘルプメッセージを表示します\n");
     print_line(L"実行例:");
     print_line(L"  " + exe_name + L" main");
@@ -81,16 +137,159 @@ void print_usage(const wchar_t* prog_name) {
     print_line(L"  " + exe_name + L" 議事録 D:\\Document -s");
 }
 
+// マルチスレッド検索マネージャ
+class ParallelSearcher {
+public:
+    ParallelSearcher(std::wstring query, bool case_sensitive, unsigned int num_threads)
+        : m_query(std::move(query)), m_case_sensitive(case_sensitive), m_num_threads(num_threads)
+    {
+        // 検索クエリを事前に小文字化しておくことで走査中の towlower 呼び出しを最小化
+        m_lower_query = m_query;
+        for (auto& c : m_lower_query) {
+            c = fast_towlower(c);
+        }
+    }
+
+    void run(const std::wstring& root_path) {
+        m_work_queue.push_back(root_path);
+
+        std::vector<std::thread> workers;
+        workers.reserve(m_num_threads);
+
+        for (unsigned int i = 0; i < m_num_threads; ++i) {
+            workers.emplace_back(&ParallelSearcher::worker_loop, this);
+        }
+
+        for (auto& t : workers) {
+            if (t.joinable()) {
+                t.join();
+            }
+        }
+    }
+
+private:
+    void worker_loop() {
+        std::vector<std::wstring> local_subdirs;
+        local_subdirs.reserve(128);
+
+        while (true) {
+            std::wstring current_dir;
+            {
+                std::unique_lock<std::mutex> lock(m_queue_mutex);
+                m_cv.wait(lock, [this] {
+                    return !m_work_queue.empty() || m_stop || m_active_tasks == 0;
+                });
+
+                if (m_work_queue.empty()) {
+                    m_stop = true;
+                    m_cv.notify_all();
+                    break;
+                }
+
+                current_dir = std::move(m_work_queue.back());
+                m_work_queue.pop_back();
+                ++m_active_tasks;
+            }
+
+            local_subdirs.clear();
+
+            // current_dir\ * のワイルドカードパターンを構築
+            std::wstring search_pattern = current_dir;
+            if (search_pattern.empty() || search_pattern.back() != L'\\') {
+                search_pattern += L'\\';
+            }
+            std::wstring base_path = search_pattern;
+            search_pattern += L'*';
+
+            WIN32_FIND_DATAW find_data;
+            // 8.3形式の短縮ファイル名スキップ (FindExInfoBasic) と
+            // ラージバッファフェッチ (FIND_FIRST_EX_LARGE_FETCH) でOSカーネル呼び出しを最小化
+            HANDLE hFind = FindFirstFileExW(
+                search_pattern.c_str(),
+                FindExInfoBasic,
+                &find_data,
+                FindExSearchNameMatch,
+                nullptr,
+                FIND_FIRST_EX_LARGE_FETCH
+            );
+
+            if (hFind != INVALID_HANDLE_VALUE) {
+                do {
+                    const wchar_t* name = find_data.cFileName;
+
+                    // "." および ".." は除外
+                    if (name[0] == L'.' && (name[1] == L'\0' || (name[1] == L'.' && name[2] == L'\0'))) {
+                        continue;
+                    }
+
+                    size_t name_len = wcslen(name);
+                    bool is_dir = (find_data.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) != 0;
+                    bool is_reparse = (find_data.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT) != 0;
+
+                    // ファイル名 / フォルダ名の一致判定
+                    bool matched = false;
+                    if (m_case_sensitive) {
+                        matched = contains_case_sensitive_fast(name, name_len, m_query);
+                    } else {
+                        matched = contains_case_insensitive_fast(name, name_len, m_lower_query);
+                    }
+
+                    if (matched) {
+                        OutputWriter::write_line(base_path + name);
+                    }
+
+                    // サブディレクトリの収集（ジャンクション/シンボリックリンクは無限ループ防止のためスキップ）
+                    if (is_dir && !is_reparse) {
+                        local_subdirs.push_back(base_path + name);
+                    }
+
+                } while (FindNextFileW(hFind, &find_data));
+
+                FindClose(hFind);
+            }
+
+            // 見つかったサブディレクトリを共有キューに一括追加
+            {
+                std::lock_guard<std::mutex> lock(m_queue_mutex);
+                if (!local_subdirs.empty()) {
+                    m_work_queue.insert(m_work_queue.end(),
+                        std::make_move_iterator(local_subdirs.begin()),
+                        std::make_move_iterator(local_subdirs.end()));
+                }
+                --m_active_tasks;
+                if (m_work_queue.empty() && m_active_tasks == 0) {
+                    m_stop = true;
+                }
+            }
+            m_cv.notify_all();
+        }
+
+        // スレッド終了時に残存バッファをフラッシュ
+        OutputWriter::flush_thread();
+    }
+
+    std::wstring m_query;
+    std::wstring m_lower_query;
+    bool m_case_sensitive;
+    unsigned int m_num_threads;
+
+    std::vector<std::wstring> m_work_queue;
+    std::mutex m_queue_mutex;
+    std::condition_variable m_cv;
+    int m_active_tasks = 0;
+    bool m_stop = false;
+};
+
 int wmain(int argc, wchar_t* argv[]) {
-#ifdef _WIN32
-    // Windows コンソールの入出力を UTF-8 に設定
+    // コンソールの入出力を UTF-8 に設定
     SetConsoleOutputCP(CP_UTF8);
     SetConsoleCP(CP_UTF8);
-#endif
 
     std::wstring query;
     std::wstring search_root = L".";
     bool case_sensitive = false;
+    unsigned int num_threads = std::thread::hardware_concurrency();
+    if (num_threads == 0) num_threads = 4;
 
     std::vector<std::wstring> positional_args;
 
@@ -102,6 +301,9 @@ int wmain(int argc, wchar_t* argv[]) {
             return 0;
         } else if (arg == L"-s" || arg == L"--case-sensitive") {
             case_sensitive = true;
+        } else if (arg == L"-t" && i + 1 < argc) {
+            num_threads = static_cast<unsigned int>(_wtoi(argv[++i]));
+            if (num_threads == 0) num_threads = 1;
         } else if (!arg.empty() && arg[0] == L'-') {
             print_err_line(L"エラー: 不明なオプションです: " + arg + L"\n");
             print_usage(argv[0]);
@@ -125,58 +327,30 @@ int wmain(int argc, wchar_t* argv[]) {
         search_root = positional_args[1];
     }
 
-    fs::path root_path(search_root);
-    std::error_code ec;
+    // パスをフルパスに事前解決（走査中の absolute() 呼び出しを不要にして超高速化）
+    wchar_t full_root_buf[32768];
+    DWORD full_len = GetFullPathNameW(search_root.c_str(), _countof(full_root_buf), full_root_buf, nullptr);
+    if (full_len == 0) {
+        print_err_line(L"エラー: パスの解決に失敗しました: " + search_root);
+        return 1;
+    }
 
-    // パスの存在・ディレクトリチェック
-    if (!fs::exists(root_path, ec)) {
+    // パスの存在とディレクトリ判定
+    DWORD attr = GetFileAttributesW(full_root_buf);
+    if (attr == INVALID_FILE_ATTRIBUTES) {
         print_err_line(L"エラー: 指定されたパスが存在しません: " + search_root);
         return 1;
     }
-    if (!fs::is_directory(root_path, ec)) {
+    if ((attr & FILE_ATTRIBUTE_DIRECTORY) == 0) {
         print_err_line(L"エラー: 指定されたパスはディレクトリではありません: " + search_root);
         return 1;
     }
 
-    // 検索一致判定関数の選択
-    auto search_func = case_sensitive ? contains_case_sensitive : contains_case_insensitive;
+    std::wstring root_path(full_root_buf, full_len);
 
-    // ディレクトリ走査のオプション設定（アクセス権限のないフォルダをスキップ）
-    fs::directory_options options = fs::directory_options::skip_permission_denied;
-    fs::recursive_directory_iterator iter(root_path, options, ec);
-
-    if (ec) {
-        print_err_line(L"エラー: ディレクトリを開けませんでした: " + search_root);
-        return 1;
-    }
-
-    fs::recursive_directory_iterator end_iter;
-
-    // 再帰的ディレクトリ探索
-    while (iter != end_iter) {
-        if (ec) {
-            // アクセス権限エラー等の発生時はリセットして次へ進む
-            ec.clear();
-            iter.increment(ec);
-            continue;
-        }
-
-        const fs::directory_entry& entry = *iter;
-        std::wstring filename = entry.path().filename().wstring();
-
-        // ファイル名またはフォルダ名に検索文字列が含まれているか
-        if (search_func(filename, query)) {
-            std::error_code abs_ec;
-            fs::path abs_path = fs::absolute(entry.path(), abs_ec);
-            if (!abs_ec) {
-                print_line(abs_path.wstring());
-            } else {
-                print_line(entry.path().wstring());
-            }
-        }
-
-        iter.increment(ec);
-    }
+    // マルチスレッド並列検索の実行
+    ParallelSearcher searcher(std::move(query), case_sensitive, num_threads);
+    searcher.run(root_path);
 
     return 0;
 }
