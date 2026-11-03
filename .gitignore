@@ -2,6 +2,8 @@
 .vs/
 out/
 build/
+bin/
+obj/
 x64/
 x86/
 Debug/
@@ -20,3 +22,4 @@ Release/
 # その他
 *.log
 .DS_Store
+

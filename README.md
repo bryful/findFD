@@ -81,6 +81,8 @@ cmake ..
 cmake --build . --config Release
 ```
 
-### 方法3: Visual Studio IDE からビルド
-Visual Studio を起動し、「ローカル フォルダーを開く」から本リポジトリのフォルダーを選択すれば、そのままビルド・デバッグ実行できます。
+### 方法3: Visual Studio IDE から開いてビルド
+- **`findFD.slnx`** または **`findFD.sln`** をダブルクリックして開きます。
+- 構成（`Debug` または `Release` / `x64`）を選び、**Ctrl + Shift + B** でビルドできます。
+- 出力先: `bin\Release\findFD.exe` または `bin\Debug\findFD.exe`
 
