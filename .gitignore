@@ -1,0 +1,22 @@
+# Visual Studio / MSVC 一時ファイル
+.vs/
+out/
+build/
+x64/
+x86/
+Debug/
+Release/
+
+# コンパイル成果物
+*.obj
+*.exe
+*.ilk
+*.pdb
+*.tlog
+*.lastbuildstate
+*.recipe
+*.vcxproj.user
+
+# その他
+*.log
+.DS_Store
