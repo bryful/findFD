@@ -126,15 +126,18 @@ void print_usage(const wchar_t* prog_name) {
     }
 
     print_line(L"使用方法:");
-    print_line(L"  " + exe_name + L" <検索文字列> [検索パス] [オプション]\n");
+    print_line(L"  " + exe_name + L" <検索文字列...> [検索パス] [オプション]\n");
     print_line(L"説明:");
     print_line(L"  指定したパス内（サブディレクトリ含む）から、ファイル名または");
     print_line(L"  フォルダ名に検索文字列を含むものをマルチスレッドで超高速に再帰検索し、");
-    print_line(L"  フルパスを出力します。\n");
+    print_line(L"  フルパスを出力します。検索文字列は複数指定可能です（デフォルト: OR検索）。\n");
     print_line(L"引数:");
-    print_line(L"  <検索文字列>           検索する文字（部分一致・必須）");
-    print_line(L"  [検索パス]             検索を開始するフォルダ（省略時はカレントディレクトリ）\n");
+    print_line(L"  <検索文字列...>        検索する文字（複数指定可・部分一致・必須）");
+    print_line(L"  [検索パス]             検索を開始するフォルダ（省略時はカレントディレクトリ）");
+    print_line(L"                         ※最後の引数が既存フォルダの場合は自動的に検索パスと判定します\n");
     print_line(L"オプション:");
+    print_line(L"  -a, --and              指定したすべての文字列を含むものを検索（デフォルト: いずれかを含むOR検索）");
+    print_line(L"  -p, --path <パス>      検索開始フォルダを明示的に指定");
     print_line(L"  -f, --file             ファイルのみを検索対象にします");
     print_line(L"  -d, --dir, --directory ディレクトリ（フォルダ）のみを検索対象にします");
     print_line(L"  -s, --case-sensitive   大文字と小文字を区別して検索します（デフォルト: 区別なし）");
@@ -142,21 +145,26 @@ void print_usage(const wchar_t* prog_name) {
     print_line(L"  -h, --help             このヘルプメッセージを表示します\n");
     print_line(L"実行例:");
     print_line(L"  " + exe_name + L" main");
-    print_line(L"  " + exe_name + L" .cpp C:\\Users\\User\\source\\repos -f");
-    print_line(L"  " + exe_name + L" test C:\\Users\\User\\source\\repos -d");
-    print_line(L"  " + exe_name + L" 議事録 D:\\Document -s");
+    print_line(L"  " + exe_name + L" .cpp .h");
+    print_line(L"  " + exe_name + L" .cpp .h C:\\Users\\User\\source\\repos -f");
+    print_line(L"  " + exe_name + L" Debug Release D:\\Source -d");
+    print_line(L"  " + exe_name + L" 2026 report D:\\Document -f --and");
 }
 
 // マルチスレッド検索マネージャ
 class ParallelSearcher {
 public:
-    ParallelSearcher(std::wstring query, bool case_sensitive, unsigned int num_threads, TargetType target_type)
-        : m_query(std::move(query)), m_case_sensitive(case_sensitive), m_num_threads(num_threads), m_target_type(target_type)
+    ParallelSearcher(std::vector<std::wstring> queries, bool case_sensitive, unsigned int num_threads, TargetType target_type, bool match_all)
+        : m_queries(std::move(queries)), m_case_sensitive(case_sensitive), m_num_threads(num_threads), m_target_type(target_type), m_match_all(match_all)
     {
         // 検索クエリを事前に小文字化しておくことで走査中の towlower 呼び出しを最小化
-        m_lower_query = m_query;
-        for (auto& c : m_lower_query) {
-            c = fast_towlower(c);
+        m_lower_queries.reserve(m_queries.size());
+        for (const auto& q : m_queries) {
+            std::wstring lq = q;
+            for (auto& c : lq) {
+                c = fast_towlower(c);
+            }
+            m_lower_queries.push_back(std::move(lq));
         }
     }
 
@@ -247,10 +255,28 @@ private:
                     // ファイル名 / フォルダ名の一致判定
                     if (is_target) {
                         bool matched = false;
-                        if (m_case_sensitive) {
-                            matched = contains_case_sensitive_fast(name, name_len, m_query);
+                        if (m_match_all) {
+                            matched = true;
+                            for (size_t i = 0; i < m_queries.size(); ++i) {
+                                bool ok = m_case_sensitive
+                                    ? contains_case_sensitive_fast(name, name_len, m_queries[i])
+                                    : contains_case_insensitive_fast(name, name_len, m_lower_queries[i]);
+                                if (!ok) {
+                                    matched = false;
+                                    break;
+                                }
+                            }
                         } else {
-                            matched = contains_case_insensitive_fast(name, name_len, m_lower_query);
+                            matched = false;
+                            for (size_t i = 0; i < m_queries.size(); ++i) {
+                                bool ok = m_case_sensitive
+                                    ? contains_case_sensitive_fast(name, name_len, m_queries[i])
+                                    : contains_case_insensitive_fast(name, name_len, m_lower_queries[i]);
+                                if (ok) {
+                                    matched = true;
+                                    break;
+                                }
+                            }
                         }
 
                         if (matched) {
@@ -288,11 +314,12 @@ private:
         OutputWriter::flush_thread();
     }
 
-    std::wstring m_query;
-    std::wstring m_lower_query;
+    std::vector<std::wstring> m_queries;
+    std::vector<std::wstring> m_lower_queries;
     bool m_case_sensitive;
     unsigned int m_num_threads;
     TargetType m_target_type;
+    bool m_match_all;
 
     std::vector<std::wstring> m_work_queue;
     std::mutex m_queue_mutex;
@@ -306,9 +333,12 @@ int wmain(int argc, wchar_t* argv[]) {
     SetConsoleOutputCP(CP_UTF8);
     SetConsoleCP(CP_UTF8);
 
-    std::wstring query;
+    std::vector<std::wstring> queries;
     std::wstring search_root = L".";
+    std::wstring explicit_path;
+    bool has_explicit_path = false;
     bool case_sensitive = false;
+    bool match_all = false;
     TargetType target_type = TargetType::All;
     unsigned int num_threads = std::thread::hardware_concurrency();
     if (num_threads == 0) num_threads = 4;
@@ -337,6 +367,11 @@ int wmain(int argc, wchar_t* argv[]) {
             target_type = TargetType::DirsOnly;
         } else if (arg == L"-s" || arg == L"--case-sensitive") {
             case_sensitive = true;
+        } else if (arg == L"-a" || arg == L"--and") {
+            match_all = true;
+        } else if ((arg == L"-p" || arg == L"--path") && i + 1 < argc) {
+            explicit_path = argv[++i];
+            has_explicit_path = true;
         } else if (arg == L"-t" && i + 1 < argc) {
             num_threads = static_cast<unsigned int>(_wtoi(argv[++i]));
             if (num_threads == 0) num_threads = 1;
@@ -349,18 +384,37 @@ int wmain(int argc, wchar_t* argv[]) {
         }
     }
 
-    // 必須引数チェック（第1引数: 検索文字列）
-    if (positional_args.empty()) {
+    // A案（スマート位置引数判定）:
+    if (has_explicit_path) {
+        // -p で明示指定されている場合は位置引数がすべて検索文字列
+        queries = positional_args;
+        search_root = explicit_path;
+    } else {
+        if (positional_args.size() == 1) {
+            // 1つの場合は検索文字列、パスはカレント "."
+            queries.push_back(positional_args[0]);
+            search_root = L".";
+        } else if (positional_args.size() >= 2) {
+            // 2つ以上ある場合、最後の引数が実在するフォルダかどうかを判定
+            const std::wstring& last_arg = positional_args.back();
+            DWORD attr = GetFileAttributesW(last_arg.c_str());
+            if (attr != INVALID_FILE_ATTRIBUTES && (attr & FILE_ATTRIBUTE_DIRECTORY) != 0) {
+                // 最後の引数が既存フォルダならそれを検索パスとする
+                search_root = last_arg;
+                queries.assign(positional_args.begin(), positional_args.end() - 1);
+            } else {
+                // フォルダでなければすべて検索文字列とし、カレントディレクトリを検索
+                queries = positional_args;
+                search_root = L".";
+            }
+        }
+    }
+
+    // 必須引数チェック（検索文字列）
+    if (queries.empty()) {
         print_err_line(L"エラー: 検索文字列を指定してください。\n");
         print_usage(argv[0]);
         return 1;
-    }
-
-    query = positional_args[0];
-
-    // 第2引数: 検索開始パス（指定無しの場合はカレント "."）
-    if (positional_args.size() >= 2) {
-        search_root = positional_args[1];
     }
 
     // パスをフルパスに事前解決（走査中の absolute() 呼び出しを不要にして超高速化）
@@ -385,7 +439,7 @@ int wmain(int argc, wchar_t* argv[]) {
     std::wstring root_path(full_root_buf, full_len);
 
     // マルチスレッド並列検索の実行
-    ParallelSearcher searcher(std::move(query), case_sensitive, num_threads, target_type);
+    ParallelSearcher searcher(std::move(queries), case_sensitive, num_threads, target_type, match_all);
     searcher.run(root_path);
 
     return 0;

@@ -18,14 +18,17 @@
 ## 使い方
 
 ```bash
-findFD.exe <検索文字列> [検索パス] [オプション]
+findFD.exe <検索文字列...> [検索パス] [オプション]
 ```
 
 ### 引数
-- `<検索文字列>` （必須）: ファイル名またはフォルダ名に含まれる部分文字列
-- `[検索パス]` （任意）: 検索を開始するディレクトリ（**省略した場合はカレントディレクトリ**）
+- `<検索文字列...>` （必須）: 検索する文字（**スペース区切りで複数指定可能**）
+- `[検索パス]` （任意）: 検索を開始するディレクトリ（省略時はカレントディレクトリ）  
+  ※最後の引数が実在するフォルダの場合、自動的に検索パスとして判定します（スマート判定）。
 
 ### オプション
+- `-a`, `--and`: **AND検索**（指定したすべての文字列を含むものを検索。デフォルトは**OR検索**）
+- `-p`, `--path <パス>`: 検索開始ディレクトリを明示的に指定
 - `-f`, `--file`: **ファイルのみ**を検索対象にします
 - `-d`, `--dir`, `--directory`: **ディレクトリ（フォルダ）のみ**を検索対象にします
 - `-s`, `--case-sensitive`: 大文字と小文字を厳密に区別して検索します（指定しない場合は区別なし）
@@ -36,37 +39,42 @@ findFD.exe <検索文字列> [検索パス] [オプション]
 
 ## 実行例
 
-### 1. カレントディレクトリ内を検索（パス省略）
+### 1. 複数の文字列を検索（OR検索: .cpp または .h）
 ```bash
-findFD.exe .cpp
+findFD.exe .cpp .h
 ```
 
-### 2. ファイルのみを検索 (`-f`)
+### 2. 複数の文字列をパス指定して検索
+```bash
+findFD.exe .cpp .h C:\Users\User\source\repos -f
+```
+
+### 3. AND検索（すべての文字列を含む）
+```bash
+findFD.exe 2026 report D:\Documents --and
+```
+
+### 4. 明示的にパスを指定 (`-p`)
+```bash
+findFD.exe Debug Release -p D:\Source -d
+```
+
+### 5. ファイルのみを検索 (`-f`)
 ```bash
 findFD.exe .cpp C:\Users\User\source\repos -f
 ```
 
-### 3. ディレクトリ（フォルダ）のみを検索 (`-d`)
+### 6. ディレクトリ（フォルダ）のみを検索 (`-d`)
 ```bash
 findFD.exe test C:\Users\User\source\repos -d
 ```
 
-### 4. パスを指定して検索（ファイル・フォルダ両方）
+### 7. 日本語文字の検索
 ```bash
-findFD.exe report D:\Documents
-```
-出力例:
-```text
-D:\Documents\2026\monthly_report.xlsx
-D:\Documents\reports
+findFD.exe 議事録 仕様書 "C:\Users\User\OneDrive - Work"
 ```
 
-### 5. 日本語文字の検索
-```bash
-findFD.exe 議事録 "C:\Users\User\OneDrive - Work"
-```
-
-### 6. 大文字・小文字を区別する検索 (`-s`)
+### 8. 大文字・小文字を区別する検索 (`-s`)
 ```bash
 findFD.exe README . -s
 ```
