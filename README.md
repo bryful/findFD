@@ -26,6 +26,8 @@ findFD.exe <検索文字列> [検索パス] [オプション]
 - `[検索パス]` （任意）: 検索を開始するディレクトリ（**省略した場合はカレントディレクトリ**）
 
 ### オプション
+- `-f`, `--file`: **ファイルのみ**を検索対象にします
+- `-d`, `--dir`, `--directory`: **ディレクトリ（フォルダ）のみ**を検索対象にします
 - `-s`, `--case-sensitive`: 大文字と小文字を厳密に区別して検索します（指定しない場合は区別なし）
 - `-t <スレッド数>`: 並列スレッド数を指定（デフォルト: CPUの論理コア数）
 - `-h`, `--help`: ヘルプを表示します
@@ -38,12 +40,18 @@ findFD.exe <検索文字列> [検索パス] [オプション]
 ```bash
 findFD.exe .cpp
 ```
-出力例:
-```text
-C:\Users\User\source\repos\findFD\main.cpp
+
+### 2. ファイルのみを検索 (`-f`)
+```bash
+findFD.exe .cpp C:\Users\User\source\repos -f
 ```
 
-### 2. パスを指定して検索
+### 3. ディレクトリ（フォルダ）のみを検索 (`-d`)
+```bash
+findFD.exe test C:\Users\User\source\repos -d
+```
+
+### 4. パスを指定して検索（ファイル・フォルダ両方）
 ```bash
 findFD.exe report D:\Documents
 ```
@@ -53,12 +61,12 @@ D:\Documents\2026\monthly_report.xlsx
 D:\Documents\reports
 ```
 
-### 3. 日本語文字の検索
+### 5. 日本語文字の検索
 ```bash
 findFD.exe 議事録 "C:\Users\User\OneDrive - Work"
 ```
 
-### 4. 大文字・小文字を区別する検索 (`-s`)
+### 6. 大文字・小文字を区別する検索 (`-s`)
 ```bash
 findFD.exe README . -s
 ```

@@ -110,6 +110,13 @@ void print_err_line(std::wstring_view wstr) {
     }
 }
 
+// 検索対象の種類
+enum class TargetType {
+    All,        // ファイルおよびフォルダの両方
+    FilesOnly,  // ファイルのみ
+    DirsOnly    // ディレクトリ（フォルダ）のみ
+};
+
 // 使い方・ヘルプの表示
 void print_usage(const wchar_t* prog_name) {
     std::wstring exe_name = prog_name;
@@ -128,20 +135,23 @@ void print_usage(const wchar_t* prog_name) {
     print_line(L"  <検索文字列>           検索する文字（部分一致・必須）");
     print_line(L"  [検索パス]             検索を開始するフォルダ（省略時はカレントディレクトリ）\n");
     print_line(L"オプション:");
+    print_line(L"  -f, --file             ファイルのみを検索対象にします");
+    print_line(L"  -d, --dir, --directory ディレクトリ（フォルダ）のみを検索対象にします");
     print_line(L"  -s, --case-sensitive   大文字と小文字を区別して検索します（デフォルト: 区別なし）");
     print_line(L"  -t <スレッド数>        並列スレッド数を指定（デフォルト: CPUの論理コア数）");
     print_line(L"  -h, --help             このヘルプメッセージを表示します\n");
     print_line(L"実行例:");
     print_line(L"  " + exe_name + L" main");
-    print_line(L"  " + exe_name + L" .cpp C:\\Users\\User\\source\\repos");
+    print_line(L"  " + exe_name + L" .cpp C:\\Users\\User\\source\\repos -f");
+    print_line(L"  " + exe_name + L" test C:\\Users\\User\\source\\repos -d");
     print_line(L"  " + exe_name + L" 議事録 D:\\Document -s");
 }
 
 // マルチスレッド検索マネージャ
 class ParallelSearcher {
 public:
-    ParallelSearcher(std::wstring query, bool case_sensitive, unsigned int num_threads)
-        : m_query(std::move(query)), m_case_sensitive(case_sensitive), m_num_threads(num_threads)
+    ParallelSearcher(std::wstring query, bool case_sensitive, unsigned int num_threads, TargetType target_type)
+        : m_query(std::move(query)), m_case_sensitive(case_sensitive), m_num_threads(num_threads), m_target_type(target_type)
     {
         // 検索クエリを事前に小文字化しておくことで走査中の towlower 呼び出しを最小化
         m_lower_query = m_query;
@@ -226,16 +236,26 @@ private:
                     bool is_dir = (find_data.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) != 0;
                     bool is_reparse = (find_data.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT) != 0;
 
-                    // ファイル名 / フォルダ名の一致判定
-                    bool matched = false;
-                    if (m_case_sensitive) {
-                        matched = contains_case_sensitive_fast(name, name_len, m_query);
-                    } else {
-                        matched = contains_case_insensitive_fast(name, name_len, m_lower_query);
+                    // 検索対象種別（ファイルのみ / ディレクトリのみ）の判定
+                    bool is_target = true;
+                    if (m_target_type == TargetType::FilesOnly && is_dir) {
+                        is_target = false;
+                    } else if (m_target_type == TargetType::DirsOnly && !is_dir) {
+                        is_target = false;
                     }
 
-                    if (matched) {
-                        OutputWriter::write_line(base_path + name);
+                    // ファイル名 / フォルダ名の一致判定
+                    if (is_target) {
+                        bool matched = false;
+                        if (m_case_sensitive) {
+                            matched = contains_case_sensitive_fast(name, name_len, m_query);
+                        } else {
+                            matched = contains_case_insensitive_fast(name, name_len, m_lower_query);
+                        }
+
+                        if (matched) {
+                            OutputWriter::write_line(base_path + name);
+                        }
                     }
 
                     // サブディレクトリの収集（ジャンクション/シンボリックリンクは無限ループ防止のためスキップ）
@@ -272,6 +292,7 @@ private:
     std::wstring m_lower_query;
     bool m_case_sensitive;
     unsigned int m_num_threads;
+    TargetType m_target_type;
 
     std::vector<std::wstring> m_work_queue;
     std::mutex m_queue_mutex;
@@ -288,6 +309,7 @@ int wmain(int argc, wchar_t* argv[]) {
     std::wstring query;
     std::wstring search_root = L".";
     bool case_sensitive = false;
+    TargetType target_type = TargetType::All;
     unsigned int num_threads = std::thread::hardware_concurrency();
     if (num_threads == 0) num_threads = 4;
 
@@ -299,6 +321,20 @@ int wmain(int argc, wchar_t* argv[]) {
         if (arg == L"-h" || arg == L"--help" || arg == L"/?") {
             print_usage(argv[0]);
             return 0;
+        } else if (arg == L"-f" || arg == L"--file") {
+            if (target_type == TargetType::DirsOnly) {
+                print_err_line(L"エラー: -f (ファイルのみ) と -d (ディレクトリのみ) は同時に指定できません。\n");
+                print_usage(argv[0]);
+                return 1;
+            }
+            target_type = TargetType::FilesOnly;
+        } else if (arg == L"-d" || arg == L"--dir" || arg == L"--directory") {
+            if (target_type == TargetType::FilesOnly) {
+                print_err_line(L"エラー: -f (ファイルのみ) と -d (ディレクトリのみ) は同時に指定できません。\n");
+                print_usage(argv[0]);
+                return 1;
+            }
+            target_type = TargetType::DirsOnly;
         } else if (arg == L"-s" || arg == L"--case-sensitive") {
             case_sensitive = true;
         } else if (arg == L"-t" && i + 1 < argc) {
@@ -349,7 +385,7 @@ int wmain(int argc, wchar_t* argv[]) {
     std::wstring root_path(full_root_buf, full_len);
 
     // マルチスレッド並列検索の実行
-    ParallelSearcher searcher(std::move(query), case_sensitive, num_threads);
+    ParallelSearcher searcher(std::move(query), case_sensitive, num_threads, target_type);
     searcher.run(root_path);
 
     return 0;
